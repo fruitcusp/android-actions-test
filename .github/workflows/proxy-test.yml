@@ -1,0 +1,137 @@
+name: proxy-test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  proxy-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Start SSH SOCKS tunnel to VPS
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.PROXY_KEY }}" > ~/.ssh/proxy_key
+          chmod 600 ~/.ssh/proxy_key
+          ssh -i ~/.ssh/proxy_key -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -N -D 127.0.0.1:1080 ghproxy@149.118.36.74 > ssh-tunnel.log 2>&1 &
+          echo $! > ssh-tunnel.pid
+          sleep 10
+          if ! kill -0 "$(cat ssh-tunnel.pid)" 2>/dev/null; then echo "SSH tunnel exited"; cat ssh-tunnel.log; exit 1; fi
+          ss -ltnp 2>/dev/null | grep 1080 || true
+
+      - name: Record DIRECT_IP and PROXY_IP
+        run: |
+          DIRECT_IP=$(curl -s --max-time 20 https://api.ipify.org)
+          echo "DIRECT_IP=$DIRECT_IP"
+          PROXY_IP=$(curl -s --max-time 20 --socks5-hostname 127.0.0.1:1080 https://api.ipify.org)
+          echo "PROXY_IP=$PROXY_IP"
+          test -n "$DIRECT_IP"
+          test -n "$PROXY_IP"
+          echo "DIRECT_IP=$DIRECT_IP" >> "$GITHUB_ENV"
+          echo "PROXY_IP=$PROXY_IP" >> "$GITHUB_ENV"
+          printf 'DIRECT_IP=%s\nPROXY_IP=%s\nEXPECTED_IP=149.118.36.74\n' "$DIRECT_IP" "$PROXY_IP" > ips.txt
+
+      - name: Install gost and start HTTP proxy on 8080
+        run: |
+          set -e
+          GOST_URL=$(curl -s https://api.github.com/repos/go-gost/gost/releases/latest | grep -o '"browser_download_url": *"[^"]*linux_amd64\.tar\.gz"' | head -n 1 | cut -d '"' -f 4)
+          echo "GOST_URL=$GOST_URL"
+          test -n "$GOST_URL"
+          curl -sL -o gost.tar.gz "$GOST_URL"
+          tar -xzf gost.tar.gz
+          chmod +x gost
+          ./gost -L=http://127.0.0.1:8080 -F=socks5://127.0.0.1:1080 > gost.log 2>&1 &
+          echo $! > gost.pid
+          sleep 5
+          HTTP_IP=$(curl -s --max-time 20 -x http://127.0.0.1:8080 https://api.ipify.org)
+          echo "HTTP_PROXY_IP=$HTTP_IP"
+          echo "HTTP_PROXY_IP=$HTTP_IP" >> "$GITHUB_ENV"
+          if [ "$HTTP_IP" != "$PROXY_IP" ]; then echo "HTTP proxy IP ($HTTP_IP) does not match PROXY_IP ($PROXY_IP)"; cat gost.log; exit 1; fi
+
+      - name: Set up Android SDK and emulator (probe recipe)
+        run: |
+          set -e
+          sudo apt-get update -y
+          sudo apt-get install -y udev
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/51-android.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger
+          export ANDROID_USER_HOME="$GITHUB_WORKSPACE/.android"
+          mkdir -p "$ANDROID_USER_HOME"
+          echo "ANDROID_USER_HOME=$ANDROID_USER_HOME" >> "$GITHUB_ENV"
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/emulator" >> "$GITHUB_PATH"
+          echo "y" | sdkmanager "platform-tools" "platforms;android-33" "system-images;android-33;google_apis;x86_64" "emulator"
+          echo "no" | avdmanager create avd -n probe33 -k "system-images;android-33;google_apis;x86_64" --device "pixel" --force
+          avdmanager list avd
+          echo "=== DEBUG ENV ==="
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "JAVA_HOME=$JAVA_HOME"
+          ls -la "$ANDROID_HOME" || true
+          echo "=== KVM ==="
+          ls -l /dev/kvm || true
+          id || true
+          echo "=== sdkmanager ==="
+          which sdkmanager || true
+          sdkmanager --list_installed || true
+          echo "=== emulator ==="
+          which emulator || true
+          emulator -version || true
+          echo "=== AVD ==="
+          ls -la "$ANDROID_USER_HOME/avd" || true
+          cat "$ANDROID_USER_HOME/avd/probe33.ini" || true
+          cat "$ANDROID_USER_HOME/avd/probe33.avd/config.ini" || true
+          echo "=== adb ==="
+          which adb || true
+          adb version || true
+
+      - name: Boot emulator with HTTP proxy and open ipify
+        run: |
+          set -e
+          export ANDROID_USER_HOME="$GITHUB_WORKSPACE/.android"
+          emulator -avd probe33 -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -no-snapshot -wipe-data -verbose -http-proxy 127.0.0.1:8080 > emulator.log 2>&1 &
+          echo $! > emulator.pid
+          adb wait-for-device
+          echo "Waiting for boot_completed..."
+          for i in $(seq 1 60); do
+            if [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ]; then echo "Boot completed after ${i} checks"; break; fi
+            sleep 10
+          done
+          adb shell getprop sys.boot_completed
+          adb shell input keyevent 82
+          sleep 5
+          echo "=== DUMPSYS WINDOW ==="
+          adb shell dumpsys window windows | grep -i -E "mCurrentFocus|mFocusedApp" || true
+          adb shell am start -a android.intent.action.VIEW -d https://api.ipify.org
+          sleep 15
+          adb exec-out screencap -p > ip-screen.png
+          ls -lh ip-screen.png
+          test -s ip-screen.png
+
+      - name: Write summary and commit results
+        run: |
+          set -e
+          printf 'DIRECT_IP=%s\nPROXY_IP=%s\nEXPECTED_IP=149.118.36.74\nHTTP_PROXY_IP=%s\n' "$DIRECT_IP" "$PROXY_IP" "$HTTP_PROXY_IP" > summary.txt
+          cat summary.txt
+          mkdir -p results/proxy-test
+          cp summary.txt results/proxy-test/summary.txt
+          cp ip-screen.png results/proxy-test/ip-screen.png
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add results/proxy-test/summary.txt results/proxy-test/ip-screen.png
+          git commit -m "Add proxy-test results" || echo "Nothing new to commit"
+          git push || echo "Push failed or nothing to push"
+
+      - name: Upload proxy-test artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: proxy-test
+          path: |
+            summary.txt
+            ip-screen.png
