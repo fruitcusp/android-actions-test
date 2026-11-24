@@ -37,9 +37,17 @@ jobs:
       - name: Install gost and start HTTP proxy on 8080
         run: |
           set -e
-          GOST_URL=$(curl -s https://api.github.com/repos/go-gost/gost/releases/latest | grep -o '"browser_download_url": *"[^"]*linux_amd64\.tar\.gz"' | head -n 1 | cut -d '"' -f 4)
+          GOST_URL=""
+          for i in 1 2 3; do
+            API_JSON=$(curl -s --max-time 20 https://api.github.com/repos/go-gost/gost/releases/latest || true)
+            GOST_URL=$(printf '%s' "$API_JSON" | grep -o '"browser_download_url": *"[^"]*linux_amd64\.tar\.gz"' | head -n 1 | cut -d '"' -f 4)
+            if [ -n "$GOST_URL" ]; then break; fi
+            echo "API lookup attempt $i failed, retrying in 10s"
+            printf '%s' "$API_JSON" | head -c 300; echo
+            sleep 10
+          done
+          if [ -z "$GOST_URL" ]; then GOST_URL="https://github.com/go-gost/gost/releases/download/v3.3.3/gost_3.3.3_linux_amd64.tar.gz"; echo "Falling back to pinned $GOST_URL"; fi
           echo "GOST_URL=$GOST_URL"
-          test -n "$GOST_URL"
           curl -sL -o gost.tar.gz "$GOST_URL"
           tar -xzf gost.tar.gz
           chmod +x gost
