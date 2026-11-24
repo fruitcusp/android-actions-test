@@ -1,0 +1,28 @@
+name: mika-evidence
+
+on:
+  workflow_dispatch:
+
+jobs:
+  evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tai artifact mika-test va commit bang chung
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download 45431965766 --name mika-test --dir mika-evidence
+          ls -lh mika-evidence
+          mkdir -p results/mika-test
+          cp mika-evidence/install.log mika-evidence/summary.txt mika-evidence/mika-screen.png mika-evidence/logcat.txt mika-evidence/mika-log.txt results/mika-test/
+          ls -lh results/mika-test
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add results/mika-test
+          git status --short
+          git commit -m "Add mika-test evidence" || echo "nothing to commit"
+          git push
