@@ -10,6 +10,7 @@ jobs:
     env:
       ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
       ANDROID_HOME: ${{ github.workspace }}/android-sdk
+      ANDROID_AVD_HOME: ${{ github.workspace }}/avd
     steps:
       - uses: actions/checkout@v4
 
@@ -80,16 +81,17 @@ jobs:
             echo "KVM_WRITABLE=$KVM_WRITABLE"
             echo "HOME=$HOME"
             echo "ANDROID_AVD_HOME=$ANDROID_AVD_HOME"
+            echo "ANDROID_USER_HOME=$ANDROID_USER_HOME"
             echo "ANDROID_SDK_HOME=$ANDROID_SDK_HOME"
             avdmanager list device || true
             if [ "$KVM_WRITABLE" = "yes" ]; then ACCEL="-accel on"; else ACCEL="-no-accel"; fi
             echo "ACCEL=$ACCEL"
             echo no | avdmanager create avd -n probe33 -k "system-images;android-33;default;x86_64" --device "pixel_5" -f || echo "AVDMANAGER_CREATE_FAILED"
             avdmanager list avd || true
-            ls -la "$HOME/.android/avd/" || true
-            if [ ! -f "$HOME/.android/avd/probe33.ini" ]; then
+            ls -la "$ANDROID_AVD_HOME" || true
+            if [ ! -f "$ANDROID_AVD_HOME/probe33.ini" ]; then
               echo "AVD_CREATE_FAILED"
-              echo "AVD_CREATE_FAILED: no probe33.ini under HOME/.android/avd after avdmanager create"
+              echo "AVD_CREATE_FAILED: no probe33.ini under ANDROID_AVD_HOME after avdmanager create"
               exit 1
             fi
             BOOT_START=$(date +%s)
@@ -137,6 +139,7 @@ jobs:
     env:
       ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
       ANDROID_HOME: ${{ github.workspace }}/android-sdk
+      ANDROID_AVD_HOME: ${{ github.workspace }}/avd
     steps:
       - uses: actions/checkout@v4
 
@@ -221,14 +224,15 @@ jobs:
             echo "KVM_WRITABLE=$KVM_WRITABLE"
             echo "HOME=$HOME"
             echo "ANDROID_AVD_HOME=$ANDROID_AVD_HOME"
+            echo "ANDROID_USER_HOME=$ANDROID_USER_HOME"
             echo "ANDROID_SDK_HOME=$ANDROID_SDK_HOME"
             avdmanager list device || true
             if [ "$KVM_WRITABLE" = "yes" ]; then ACCEL="-accel on"; else ACCEL="-no-accel"; fi
             echo "ACCEL=$ACCEL"
             if ! echo no | avdmanager create avd -n probe33 -k "system-images;android-33;default;arm64-v8a" --device "pixel_5" -f; then echo "ARM_BLOCKED_AT=avd_create"; exit 1; fi
             avdmanager list avd || true
-            ls -la "$HOME/.android/avd/" || true
-            if [ ! -f "$HOME/.android/avd/probe33.ini" ]; then echo "ARM_BLOCKED_AT=avd_create"; echo "AVD_CREATE_FAILED: no probe33.ini"; exit 1; fi
+            ls -la "$ANDROID_AVD_HOME" || true
+            if [ ! -f "$ANDROID_AVD_HOME/probe33.ini" ]; then echo "ARM_BLOCKED_AT=avd_create"; echo "AVD_CREATE_FAILED: no probe33.ini"; exit 1; fi
             BOOT_START=$(date +%s)
             nohup emulator -avd probe33 -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect $ACCEL > "$GITHUB_WORKSPACE/emulator.log" 2>&1 &
             echo "EMULATOR_PID=$!"
