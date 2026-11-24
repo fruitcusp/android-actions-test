@@ -1,0 +1,241 @@
+name: mika-test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  mika:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
+      ANDROID_HOME: ${{ github.workspace }}/android-sdk
+      ANDROID_AVD_HOME: ${{ github.workspace }}/android-user-home/avd
+      ANDROID_USER_HOME: ${{ github.workspace }}/android-user-home
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Thong tin he thong va kiem tra KVM
+        id: kvm
+        run: |
+          set -o pipefail
+          {
+            echo "=== SYSTEM ==="
+            uname -a
+            echo "NPROC=$(nproc)"
+            free -h
+            java -version 2>&1 || echo "JAVA_MISSING"
+            echo "=== KVM ==="
+            ls -l /dev/kvm || echo "/dev/kvm missing"
+            if [ -e /dev/kvm ]; then KVM_PRESENT=yes; else KVM_PRESENT=no; fi
+            if [ -w /dev/kvm ]; then KVM_WRITABLE=yes; else KVM_WRITABLE=no; fi
+            echo "KVM_PRESENT=$KVM_PRESENT"
+            echo "KVM_WRITABLE=$KVM_WRITABLE"
+            if [ "$KVM_PRESENT" = "yes" ] && [ "$KVM_WRITABLE" = "no" ]; then
+              echo "Applying KVM udev fix..."
+              echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+              sudo udevadm control --reload-rules
+              sudo udevadm trigger --name-match=kvm
+              sleep 2
+              ls -l /dev/kvm
+              if [ -w /dev/kvm ]; then KVM_WRITABLE=yes; else KVM_WRITABLE=no; fi
+              echo "KVM_WRITABLE_AFTER_FIX=$KVM_WRITABLE"
+            fi
+            echo "=== ANDROID_USER_HOME ==="
+            mkdir -p "$ANDROID_USER_HOME/avd"
+            echo "ANDROID_USER_HOME=$ANDROID_USER_HOME"
+            echo "ANDROID_AVD_HOME=$ANDROID_AVD_HOME"
+            ls -la "$ANDROID_USER_HOME" || true
+          } 2>&1 | tee -a mika-log.txt
+
+      - name: Cai dat Android SDK va tao AVD probe33
+        id: sdk
+        run: |
+          set -o pipefail
+          {
+            echo "=== SDK INSTALL ==="
+            echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+            mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
+            cd "$ANDROID_SDK_ROOT/cmdline-tools"
+            if [ ! -f "commandlinetools-linux-11076708_latest.zip" ]; then
+              echo "Downloading cmdline-tools..."
+              curl -fsSL -o commandlinetools-linux-11076708_latest.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+            fi
+            ls -lh commandlinetools-linux-11076708_latest.zip
+            unzip -o -q commandlinetools-linux-11076708_latest.zip -d tmp
+            mkdir -p latest
+            cp -r tmp/cmdline-tools/* latest/
+            rm -rf tmp
+            export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$PATH"
+            echo "=== sdkmanager version ==="
+            sdkmanager --version
+            echo "=== Installing packages ==="
+            yes | sdkmanager --licenses || true
+            sdkmanager "platform-tools" "platforms;android-33" "system-images;android-33;default;x86_64" "emulator"
+            echo "=== AVD CREATE ==="
+            echo "no" | avdmanager create avd -n probe33 -k "system-images;android-33;default;x86_64" --device "pixel" --force
+            echo "=== AVD LIST ==="
+            avdmanager list avd
+            echo "=== AVD FILES ==="
+            ls -R "$ANDROID_AVD_HOME" || ls -R "$ANDROID_USER_HOME"
+            echo "=== AVD CONFIG ==="
+            cat "$ANDROID_AVD_HOME/probe33.avd/config.ini" || cat "$ANDROID_USER_HOME/avd/probe33.avd/config.ini"
+          } 2>&1 | tee -a mika-log.txt
+
+      - name: Khoi dong emulator probe33 va cho boot xong
+        id: boot
+        run: |
+          set -o pipefail
+          {
+            export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/emulator:$PATH"
+            echo "=== EMULATOR BOOT ==="
+            mkdir -p "$ANDROID_USER_HOME/avd"
+            ls -R "$ANDROID_USER_HOME" || true
+            nohup emulator -avd probe33 -no-window -no-audio -gpu swiftshader_indirect -no-snapshot -no-boot-anim > emulator.log 2>&1 &
+            echo "EMULATOR_PID=$!"
+            adb wait-for-device
+            echo "=== DEVICE ==="
+            adb devices -l
+            echo "=== BOOT POLL (max 600s) ==="
+            BOOT_OK=no
+            for i in $(seq 1 60); do
+              BOOT=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+              echo "poll $i: sys.boot_completed=$BOOT"
+              if [ "$BOOT" = "1" ]; then BOOT_OK=yes; break; fi
+              sleep 10
+            done
+            echo "BOOT_OK=$BOOT_OK"
+            if [ "$BOOT_OK" != "yes" ]; then
+              echo "BOOT_FAILED"
+              cat emulator.log || true
+              exit 1
+            fi
+            adb shell getprop sys.boot_completed
+            adb shell getprop ro.build.version.release
+            adb shell getprop ro.product.cpu.abi
+            adb shell getprop ro.build.version.sdk
+            adb shell pm list packages | head -n 20
+            adb shell dumpsys window windows | grep -i "mCurrentFocus\|mFocusedApp" || true
+          } 2>&1 | tee -a mika-log.txt
+
+      - name: Tai APK Mika va cai dat
+        id: install
+        if: always()
+        run: |
+          set -o pipefail
+          {
+            export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/emulator:$PATH"
+            echo "=== MIKA APK DOWNLOAD ==="
+            curl -fsSL -o Mika-v0.1.50.apk https://github.com/wangzan101/Mika/releases/download/v0.1.50/Mika-v0.1.50.apk
+            APK_SIZE_BYTES=$(stat -c%s Mika-v0.1.50.apk)
+            echo "APK_SIZE_BYTES=$APK_SIZE_BYTES"
+            ls -lh Mika-v0.1.50.apk
+            file Mika-v0.1.50.apk || true
+            sha256sum Mika-v0.1.50.apk || true
+            echo "=== ADB INSTALL ==="
+            adb devices -l
+            set +e
+            adb install Mika-v0.1.50.apk > install-output.txt 2>&1
+            INSTALL_EXIT_CODE=$?
+            set -e
+            echo "=== INSTALL OUTPUT (verbatim) ==="
+            cat install-output.txt
+            echo "INSTALL_EXIT_CODE=$INSTALL_EXIT_CODE"
+            cp install-output.txt install.log
+            if [ "$INSTALL_EXIT_CODE" = "0" ] && grep -q "Success" install-output.txt; then
+              INSTALL_OK=yes
+              INSTALL_RESULT="Success"
+            else
+              INSTALL_OK=no
+              INSTALL_RESULT=$(grep -i "Failure" install-output.txt | head -n 1 | tr -d '\r' || true)
+              if [ -z "$INSTALL_RESULT" ]; then
+                INSTALL_RESULT=$(tail -n 1 install-output.txt | tr -d '\r' || true)
+              fi
+              if [ -z "$INSTALL_RESULT" ]; then
+                INSTALL_RESULT="INSTALL_EXIT_CODE=$INSTALL_EXIT_CODE (no output)"
+              fi
+            fi
+            echo "INSTALL_OK=$INSTALL_OK"
+            echo "INSTALL_RESULT=$INSTALL_RESULT"
+            echo "apk_size_bytes=$APK_SIZE_BYTES" >> "$GITHUB_OUTPUT"
+            echo "install_ok=$INSTALL_OK" >> "$GITHUB_OUTPUT"
+            echo "install_result=$INSTALL_RESULT" >> "$GITHUB_OUTPUT"
+            echo "install_exit_code=$INSTALL_EXIT_CODE" >> "$GITHUB_OUTPUT"
+            echo "APK_SIZE_BYTES=$APK_SIZE_BYTES" >> "$GITHUB_ENV"
+            echo "INSTALL_OK=$INSTALL_OK" >> "$GITHUB_ENV"
+            echo "INSTALL_RESULT=$INSTALL_RESULT" >> "$GITHUB_ENV"
+            echo "INSTALL_EXIT_CODE=$INSTALL_EXIT_CODE" >> "$GITHUB_ENV"
+          } 2>&1 | tee -a mika-log.txt
+
+      - name: Khoi chay Mika, chup man hinh va lay logcat
+        id: launch
+        if: steps.install.outputs.install_ok == 'yes'
+        run: |
+          set -o pipefail
+          {
+            export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/emulator:$PATH"
+            echo "=== LAUNCH MIKA ==="
+            LAUNCHER=$(adb shell cmd package resolve-activity --brief -c android.intent.category.LAUNCHER com.wangzan101.mika 2>/dev/null | tail -n 1 | tr -d '\r' || true)
+            echo "LAUNCHER_ACTIVITY=$LAUNCHER"
+            if [ -n "$LAUNCHER" ]; then
+              adb shell am start -n "$LAUNCHER" || adb shell monkey -p com.wangzan101.mika -c android.intent.category.LAUNCHER 1
+            else
+              adb shell monkey -p com.wangzan101.mika -c android.intent.category.LAUNCHER 1
+            fi
+            echo "=== WAIT 20s ==="
+            sleep 20
+            echo "=== PID ==="
+            adb shell pidof com.wangzan101.mika || echo "PID_NOT_FOUND"
+            echo "=== CURRENT FOCUS ==="
+            adb shell dumpsys window windows | grep -i "mCurrentFocus\|mFocusedApp" || true
+            echo "=== SCREENSHOT ==="
+            adb shell screencap -p /sdcard/mika-screen.png
+            adb pull /sdcard/mika-screen.png mika-screen.png
+            ls -lh mika-screen.png
+            echo "=== LOGCAT (last 200 lines) ==="
+            adb logcat -d | tail -n 200 > logcat.txt
+            wc -l logcat.txt
+            echo "LAUNCH_RESULT=launched; waited 20s; screencap=mika-screen.png; logcat=logcat.txt (last 200 lines)"
+            echo "launch_result=launched; waited 20s; screencap=mika-screen.png; logcat=logcat.txt (last 200 lines)" >> "$GITHUB_OUTPUT"
+          } 2>&1 | tee -a mika-log.txt
+
+      - name: Tao file tom tat
+        id: summary
+        if: always()
+        run: |
+          {
+            echo "Mika test - tom tat"
+            echo "=================="
+            echo "APK: https://github.com/wangzan101/Mika/releases/download/v0.1.50/Mika-v0.1.50.apk"
+            echo "APK_SIZE_BYTES=${APK_SIZE_BYTES:-unknown}"
+            if [ -f Mika-v0.1.50.apk ]; then ls -lh Mika-v0.1.50.apk; stat -c%s Mika-v0.1.50.apk; fi
+            echo ""
+            echo "INSTALL_RESULT (verbatim, from install.log):"
+            if [ -f install.log ]; then cat install.log; else echo "install.log not found (install step did not run or download failed)"; fi
+            echo ""
+            echo "INSTALL_EXIT_CODE=${INSTALL_EXIT_CODE:-unknown}"
+            echo "INSTALL_OK=${INSTALL_OK:-unknown}"
+            echo ""
+            echo "LAUNCH_RESULT:"
+            if [ "${INSTALL_OK:-no}" = "yes" ]; then
+              if [ -f mika-screen.png ]; then echo "launched; screenshot=mika-screen.png"; else echo "launched; screenshot missing"; fi
+              if [ -f logcat.txt ]; then echo "logcat=logcat.txt (last 200 lines)"; else echo "logcat missing"; fi
+            else
+              echo "SKIPPED - install did not succeed, app was not launched"
+            fi
+          } > summary.txt 2>&1
+          cat summary.txt
+          ls -lh install.log summary.txt mika-screen.png logcat.txt mika-log.txt 2>&1 || true
+
+      - name: Tai len artifact mika-test
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mika-test
+          path: |
+            install.log
+            summary.txt
+            mika-screen.png
+            logcat.txt
+            mika-log.txt
+          if-no-files-found: warn
