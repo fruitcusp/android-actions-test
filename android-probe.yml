@@ -1,0 +1,241 @@
+name: android-probe
+
+on:
+  workflow_dispatch:
+
+jobs:
+  x86:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
+      ANDROID_HOME: ${{ github.workspace }}/android-sdk
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Thong tin he thong va kiem tra KVM
+        id: kvm
+        run: |
+          {
+            echo "=== SYSTEM ==="
+            uname -a
+            echo "NPROC=$(nproc)"
+            free -h
+            java -version 2>&1 || echo "JAVA_MISSING"
+            echo "=== KVM ==="
+            ls -l /dev/kvm || echo "/dev/kvm missing"
+            if [ -e /dev/kvm ]; then KVM_PRESENT=yes; else KVM_PRESENT=no; fi
+            if [ -w /dev/kvm ]; then KVM_WRITABLE=yes; else KVM_WRITABLE=no; fi
+            echo "KVM_PRESENT=$KVM_PRESENT"
+            echo "KVM_WRITABLE=$KVM_WRITABLE"
+            if [ "$KVM_PRESENT" = "yes" ] && [ "$KVM_WRITABLE" = "no" ]; then
+              echo "Applying KVM udev fix..."
+              echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+              sudo udevadm control --reload-rules || true
+              sudo udevadm trigger --name-match=kvm || true
+              sleep 2
+              ls -l /dev/kvm || true
+              if [ -w /dev/kvm ]; then KVM_WRITABLE=yes; else KVM_WRITABLE=no; fi
+              echo "KVM_PRESENT=$KVM_PRESENT"
+              echo "KVM_WRITABLE=$KVM_WRITABLE"
+            fi
+            echo "KVM_PRESENT=$KVM_PRESENT" >> "$GITHUB_ENV"
+            echo "KVM_WRITABLE=$KVM_WRITABLE" >> "$GITHUB_ENV"
+            echo "present=$KVM_PRESENT" >> "$GITHUB_OUTPUT"
+            echo "writable=$KVM_WRITABLE" >> "$GITHUB_OUTPUT"
+          } 2>&1 | tee -a "$GITHUB_WORKSPACE/probe-log.txt"
+
+      - name: Cai dat Android SDK
+        run: |
+          {
+            echo "=== SDK INSTALL ==="
+            SDK_START=$(date +%s)
+            export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/emulator:$PATH"
+            mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
+            if ! curl -fsSL -o /tmp/cmdtools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip; then echo "SDK_DOWNLOAD_FAILED"; exit 1; fi
+            unzip -q -o /tmp/cmdtools.zip -d "$ANDROID_SDK_ROOT/cmdline-tools/tmp"
+            mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools/latest"
+            mv "$ANDROID_SDK_ROOT/cmdline-tools/tmp/cmdline-tools/"* "$ANDROID_SDK_ROOT/cmdline-tools/latest/"
+            yes | sdkmanager --licenses || true
+            if ! sdkmanager "platform-tools" "emulator" "platforms;android-33" "system-images;android-33;default;x86_64"; then
+              SDK_END=$(date +%s)
+              echo "SDK_INSTALL_SECONDS=$((SDK_END - SDK_START))"
+              echo "SDK_INSTALL_STATUS=failed"
+              exit 1
+            fi
+            SDK_END=$(date +%s)
+            echo "SDK_INSTALL_SECONDS=$((SDK_END - SDK_START))"
+            echo "SDK_INSTALL_STATUS=ok"
+            sdkmanager --list_installed || true
+          } 2>&1 | tee -a "$GITHUB_WORKSPACE/probe-log.txt"
+
+      - name: Tao AVD va khoi dong emulator
+        run: |
+          {
+            echo "=== AVD + BOOT ==="
+            export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/emulator:$PATH"
+            echo "KVM_PRESENT=$KVM_PRESENT"
+            echo "KVM_WRITABLE=$KVM_WRITABLE"
+            if [ "$KVM_WRITABLE" = "yes" ]; then ACCEL="-accel on"; else ACCEL="-no-accel"; fi
+            echo "ACCEL=$ACCEL"
+            echo no | avdmanager create avd -n probe33 -k "system-images;android-33;default;x86_64" --device "pixel_5" -f
+            BOOT_START=$(date +%s)
+            nohup emulator -avd probe33 -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect $ACCEL > "$GITHUB_WORKSPACE/emulator.log" 2>&1 &
+            echo "EMULATOR_PID=$!"
+            BOOT_SECONDS=""
+            for i in $(seq 1 40); do
+              timeout 10 adb wait-for-device || true
+              BOOTED=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
+              echo "poll $i: sys.boot_completed=$BOOTED elapsed=$(( $(date +%s) - BOOT_START ))s"
+              if [ "$BOOTED" = "1" ]; then BOOT_SECONDS=$(( $(date +%s) - BOOT_START )); break; fi
+              sleep 15
+            done
+            if [ -z "$BOOT_SECONDS" ]; then
+              echo "BOOT_TIMEOUT"
+              tail -n 100 "$GITHUB_WORKSPACE/emulator.log" || true
+              exit 1
+            fi
+            echo "BOOT_SECONDS=$BOOT_SECONDS"
+            echo "ANDROID_VERSION=$(adb shell getprop ro.build.version.release | tr -d '\r')"
+            echo "ANDROID_SDK=$(adb shell getprop ro.build.version.sdk | tr -d '\r')"
+            echo "ANDROID_ABI=$(adb shell getprop ro.product.cpu.abi | tr -d '\r')"
+            adb exec-out screencap -p > "$GITHUB_WORKSPACE/screen.png"
+            ls -lh "$GITHUB_WORKSPACE/screen.png" || true
+            file "$GITHUB_WORKSPACE/screen.png" || true
+          } 2>&1 | tee -a "$GITHUB_WORKSPACE/probe-log.txt"
+
+      - name: Tai len artifact probe-x86
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-x86
+          path: |
+            probe-log.txt
+            emulator.log
+            screen.png
+          if-no-files-found: warn
+
+  arm:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 35
+    env:
+      ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
+      ANDROID_HOME: ${{ github.workspace }}/android-sdk
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Thong tin he thong va kiem tra KVM
+        id: kvm
+        run: |
+          {
+            echo "=== SYSTEM ==="
+            uname -a
+            echo "ARCH=$(uname -m)"
+            echo "NPROC=$(nproc)"
+            free -h
+            java -version 2>&1 || echo "JAVA_MISSING"
+            echo "=== KVM ==="
+            ls -l /dev/kvm || echo "/dev/kvm missing"
+            if [ -e /dev/kvm ]; then KVM_PRESENT=yes; else KVM_PRESENT=no; fi
+            if [ -w /dev/kvm ]; then KVM_WRITABLE=yes; else KVM_WRITABLE=no; fi
+            echo "KVM_PRESENT=$KVM_PRESENT"
+            echo "KVM_WRITABLE=$KVM_WRITABLE"
+            if [ "$KVM_PRESENT" = "yes" ] && [ "$KVM_WRITABLE" = "no" ]; then
+              echo "Applying KVM udev fix..."
+              echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+              sudo udevadm control --reload-rules || true
+              sudo udevadm trigger --name-match=kvm || true
+              sleep 2
+              ls -l /dev/kvm || true
+              if [ -w /dev/kvm ]; then KVM_WRITABLE=yes; else KVM_WRITABLE=no; fi
+              echo "KVM_PRESENT=$KVM_PRESENT"
+              echo "KVM_WRITABLE=$KVM_WRITABLE"
+            fi
+            echo "KVM_PRESENT=$KVM_PRESENT" >> "$GITHUB_ENV"
+            echo "KVM_WRITABLE=$KVM_WRITABLE" >> "$GITHUB_ENV"
+            echo "present=$KVM_PRESENT" >> "$GITHUB_OUTPUT"
+            echo "writable=$KVM_WRITABLE" >> "$GITHUB_OUTPUT"
+          } 2>&1 | tee -a "$GITHUB_WORKSPACE/probe-log.txt"
+
+      - name: Dung neu khong co KVM
+        run: |
+          {
+            if [ "${{ steps.kvm.outputs.writable }}" != "yes" ]; then
+              echo "ARM_BLOCKED_AT=kvm_check"
+              echo "KVM_PRESENT=${{ steps.kvm.outputs.present }}"
+              echo "KVM_WRITABLE=${{ steps.kvm.outputs.writable }}"
+              exit 1
+            fi
+            echo "ARM_KVM_OK=yes"
+          } 2>&1 | tee -a "$GITHUB_WORKSPACE/probe-log.txt"
+
+      - name: Cai dat Android SDK (chi khi co KVM)
+        run: |
+          {
+            echo "=== SDK INSTALL ==="
+            SDK_START=$(date +%s)
+            export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/emulator:$PATH"
+            mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
+            if ! curl -fsSL -o /tmp/cmdtools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip; then echo "ARM_BLOCKED_AT=sdk_install"; echo "SDK_DOWNLOAD_FAILED"; exit 1; fi
+            unzip -q -o /tmp/cmdtools.zip -d "$ANDROID_SDK_ROOT/cmdline-tools/tmp" || { echo "ARM_BLOCKED_AT=sdk_install"; echo "UNZIP_FAILED"; exit 1; }
+            mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools/latest"
+            mv "$ANDROID_SDK_ROOT/cmdline-tools/tmp/cmdline-tools/"* "$ANDROID_SDK_ROOT/cmdline-tools/latest/" || { echo "ARM_BLOCKED_AT=sdk_install"; echo "CMDLINE_TOOLS_MOVE_FAILED"; exit 1; }
+            yes | sdkmanager --licenses || true
+            if ! sdkmanager "platform-tools" "emulator" "platforms;android-33" "system-images;android-33;default;arm64-v8a"; then
+              SDK_END=$(date +%s)
+              echo "SDK_INSTALL_SECONDS=$((SDK_END - SDK_START))"
+              echo "ARM_BLOCKED_AT=sdk_install"
+              exit 1
+            fi
+            SDK_END=$(date +%s)
+            echo "SDK_INSTALL_SECONDS=$((SDK_END - SDK_START))"
+            echo "SDK_INSTALL_STATUS=ok"
+            sdkmanager --list_installed || true
+          } 2>&1 | tee -a "$GITHUB_WORKSPACE/probe-log.txt"
+
+      - name: Tao AVD va khoi dong emulator (chi khi co KVM)
+        run: |
+          {
+            echo "=== AVD + BOOT ==="
+            export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/emulator:$PATH"
+            echo "KVM_PRESENT=$KVM_PRESENT"
+            echo "KVM_WRITABLE=$KVM_WRITABLE"
+            if [ "$KVM_WRITABLE" = "yes" ]; then ACCEL="-accel on"; else ACCEL="-no-accel"; fi
+            echo "ACCEL=$ACCEL"
+            if ! echo no | avdmanager create avd -n probe33 -k "system-images;android-33;default;arm64-v8a" --device "pixel_5" -f; then echo "ARM_BLOCKED_AT=avd_create"; exit 1; fi
+            BOOT_START=$(date +%s)
+            nohup emulator -avd probe33 -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect $ACCEL > "$GITHUB_WORKSPACE/emulator.log" 2>&1 &
+            echo "EMULATOR_PID=$!"
+            BOOT_SECONDS=""
+            for i in $(seq 1 40); do
+              timeout 10 adb wait-for-device || true
+              BOOTED=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
+              echo "poll $i: sys.boot_completed=$BOOTED elapsed=$(( $(date +%s) - BOOT_START ))s"
+              if [ "$BOOTED" = "1" ]; then BOOT_SECONDS=$(( $(date +%s) - BOOT_START )); break; fi
+              sleep 15
+            done
+            if [ -z "$BOOT_SECONDS" ]; then
+              echo "BOOT_TIMEOUT"
+              echo "ARM_BLOCKED_AT=boot_timeout"
+              tail -n 100 "$GITHUB_WORKSPACE/emulator.log" || true
+              exit 1
+            fi
+            echo "BOOT_SECONDS=$BOOT_SECONDS"
+            echo "ANDROID_VERSION=$(adb shell getprop ro.build.version.release | tr -d '\r')"
+            echo "ANDROID_SDK=$(adb shell getprop ro.build.version.sdk | tr -d '\r')"
+            echo "ANDROID_ABI=$(adb shell getprop ro.product.cpu.abi | tr -d '\r')"
+            adb exec-out screencap -p > "$GITHUB_WORKSPACE/screen.png"
+            ls -lh "$GITHUB_WORKSPACE/screen.png" || true
+            file "$GITHUB_WORKSPACE/screen.png" || true
+          } 2>&1 | tee -a "$GITHUB_WORKSPACE/probe-log.txt"
+
+      - name: Tai len artifact probe-arm
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-arm
+          path: |
+            probe-log.txt
+            emulator.log
+            screen.png
+          if-no-files-found: warn
