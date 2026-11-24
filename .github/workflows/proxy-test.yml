@@ -149,6 +149,8 @@ jobs:
           adb shell 'echo "--no-first-run" > /data/local/tmp/chrome-command-line' || true
           adb shell am start -a android.intent.action.VIEW -d https://api.ipify.org
           sleep 10
+          adb shell input tap 540 1695 || true
+          sleep 3
           adb shell input tap 540 1620 || true
           sleep 3
           adb shell am start -a android.intent.action.VIEW -d https://api.ipify.org
