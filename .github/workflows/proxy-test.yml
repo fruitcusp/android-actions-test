@@ -145,6 +145,12 @@ jobs:
           sleep 5
           echo "=== DUMPSYS WINDOW ==="
           adb shell dumpsys window windows | grep -i -E "mCurrentFocus|mFocusedApp" || true
+          adb root || true
+          adb shell 'echo "--no-first-run" > /data/local/tmp/chrome-command-line' || true
+          adb shell am start -a android.intent.action.VIEW -d https://api.ipify.org
+          sleep 10
+          adb shell input tap 540 1620 || true
+          sleep 3
           adb shell am start -a android.intent.action.VIEW -d https://api.ipify.org
           sleep 15
           adb exec-out screencap -p > ip-screen.png
