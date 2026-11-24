@@ -155,9 +155,19 @@ jobs:
 
       - name: Mo Cloudflare tunnel
         run: |
-          curl -fsSL -o /tmp/cloudflared.tgz https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.tgz
-          tar -xzf /tmp/cloudflared.tgz -C /tmp
-          sudo mv /tmp/cloudflared /usr/local/bin/cloudflared
+          # Ban latest cua cloudflared KHONG co file cloudflared-linux-amd64.tgz
+          # (chi co .deb, .rpm va binary tran) - dung .deb, du phong bang binary tran.
+          if curl -fsSL -o /tmp/cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb; then
+            sudo dpkg -i /tmp/cloudflared.deb || sudo apt-get install -f -y || true
+          else
+            echo "Tai .deb that bai, thu binary tran..."
+          fi
+          if ! command -v cloudflared >/dev/null 2>&1; then
+            curl -fsSL -o /tmp/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 || echo "BINARY_DOWNLOAD_FAILED"
+            chmod +x /tmp/cloudflared 2>/dev/null || true
+            sudo mv /tmp/cloudflared /usr/local/bin/cloudflared 2>/dev/null || true
+          fi
+          command -v cloudflared >/dev/null 2>&1 || { echo "CLOUDFLARED_INSTALL_FAILED"; exit 1; }
           cloudflared --version
           nohup cloudflared tunnel --url http://localhost:8000 > "$GITHUB_WORKSPACE/cloudflared.log" 2>&1 &
           echo "CLOUDFLARED_PID=$!"
