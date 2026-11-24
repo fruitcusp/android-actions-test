@@ -10,7 +10,8 @@ jobs:
     env:
       ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
       ANDROID_HOME: ${{ github.workspace }}/android-sdk
-      ANDROID_AVD_HOME: ${{ github.workspace }}/avd
+      ANDROID_AVD_HOME: ${{ github.workspace }}/android-user-home/avd
+      ANDROID_USER_HOME: ${{ github.workspace }}/android-user-home
     steps:
       - uses: actions/checkout@v4
 
@@ -139,7 +140,8 @@ jobs:
     env:
       ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
       ANDROID_HOME: ${{ github.workspace }}/android-sdk
-      ANDROID_AVD_HOME: ${{ github.workspace }}/avd
+      ANDROID_AVD_HOME: ${{ github.workspace }}/android-user-home/avd
+      ANDROID_USER_HOME: ${{ github.workspace }}/android-user-home
     steps:
       - uses: actions/checkout@v4
 
