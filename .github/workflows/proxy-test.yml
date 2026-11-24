@@ -155,6 +155,8 @@ jobs:
           sleep 3
           adb shell am start -a android.intent.action.VIEW -d https://api.ipify.org
           sleep 15
+          adb shell input tap 570 1478 || true
+          sleep 3
           adb exec-out screencap -p > ip-screen.png
           ls -lh ip-screen.png
           test -s ip-screen.png
