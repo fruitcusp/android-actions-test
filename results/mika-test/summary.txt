@@ -1,0 +1,17 @@
+Mika test - tom tat
+==================
+APK: https://github.com/wangzan101/Mika/releases/download/v0.1.50/Mika-v0.1.50.apk
+APK_SIZE_BYTES=132291810
+-rw-r--r-- 1 runner runner 127M Nov 24 16:01 Mika-v0.1.50.apk
+132291810
+
+INSTALL_RESULT (verbatim, from install.log):
+Performing Streamed Install
+Success
+
+INSTALL_EXIT_CODE=0
+INSTALL_OK=yes
+
+LAUNCH_RESULT:
+launched; screenshot=mika-screen.png
+logcat=logcat.txt (last 200 lines)
