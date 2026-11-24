@@ -44,6 +44,7 @@ jobs:
             echo "present=$KVM_PRESENT" >> "$GITHUB_OUTPUT"
             echo "writable=$KVM_WRITABLE" >> "$GITHUB_OUTPUT"
           } 2>&1 | tee -a "$GITHUB_WORKSPACE/probe-log.txt"
+          exit "${PIPESTATUS[0]}"
 
       - name: Cai dat Android SDK
         run: |
@@ -68,6 +69,7 @@ jobs:
             echo "SDK_INSTALL_STATUS=ok"
             sdkmanager --list_installed || true
           } 2>&1 | tee -a "$GITHUB_WORKSPACE/probe-log.txt"
+          exit "${PIPESTATUS[0]}"
 
       - name: Tao AVD va khoi dong emulator
         run: |
@@ -76,14 +78,27 @@ jobs:
             export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/emulator:$PATH"
             echo "KVM_PRESENT=$KVM_PRESENT"
             echo "KVM_WRITABLE=$KVM_WRITABLE"
+            echo "HOME=$HOME"
+            echo "ANDROID_AVD_HOME=$ANDROID_AVD_HOME"
+            echo "ANDROID_SDK_HOME=$ANDROID_SDK_HOME"
+            avdmanager list device || true
             if [ "$KVM_WRITABLE" = "yes" ]; then ACCEL="-accel on"; else ACCEL="-no-accel"; fi
             echo "ACCEL=$ACCEL"
-            echo no | avdmanager create avd -n probe33 -k "system-images;android-33;default;x86_64" --device "pixel_5" -f
+            echo no | avdmanager create avd -n probe33 -k "system-images;android-33;default;x86_64" --device "pixel_5" -f || echo "AVDMANAGER_CREATE_FAILED"
+            avdmanager list avd || true
+            ls -la "$HOME/.android/avd/" || true
+            if [ ! -f "$HOME/.android/avd/probe33.ini" ]; then
+              echo "AVD_CREATE_FAILED"
+              echo "AVD_CREATE_FAILED: no probe33.ini under HOME/.android/avd after avdmanager create"
+              exit 1
+            fi
             BOOT_START=$(date +%s)
             nohup emulator -avd probe33 -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect $ACCEL > "$GITHUB_WORKSPACE/emulator.log" 2>&1 &
             echo "EMULATOR_PID=$!"
             BOOT_SECONDS=""
             for i in $(seq 1 40); do
+              ELAPSED=$(( $(date +%s) - BOOT_START ))
+              if [ "$ELAPSED" -ge 600 ]; then echo "BOOT_TIMEOUT (elapsed ${ELAPSED}s)"; break; fi
               timeout 10 adb wait-for-device || true
               BOOTED=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
               echo "poll $i: sys.boot_completed=$BOOTED elapsed=$(( $(date +%s) - BOOT_START ))s"
@@ -103,6 +118,7 @@ jobs:
             ls -lh "$GITHUB_WORKSPACE/screen.png" || true
             file "$GITHUB_WORKSPACE/screen.png" || true
           } 2>&1 | tee -a "$GITHUB_WORKSPACE/probe-log.txt"
+          exit "${PIPESTATUS[0]}"
 
       - name: Tai len artifact probe-x86
         if: always()
@@ -156,6 +172,7 @@ jobs:
             echo "present=$KVM_PRESENT" >> "$GITHUB_OUTPUT"
             echo "writable=$KVM_WRITABLE" >> "$GITHUB_OUTPUT"
           } 2>&1 | tee -a "$GITHUB_WORKSPACE/probe-log.txt"
+          exit "${PIPESTATUS[0]}"
 
       - name: Dung neu khong co KVM
         run: |
@@ -168,6 +185,7 @@ jobs:
             fi
             echo "ARM_KVM_OK=yes"
           } 2>&1 | tee -a "$GITHUB_WORKSPACE/probe-log.txt"
+          exit "${PIPESTATUS[0]}"
 
       - name: Cai dat Android SDK (chi khi co KVM)
         run: |
@@ -192,6 +210,7 @@ jobs:
             echo "SDK_INSTALL_STATUS=ok"
             sdkmanager --list_installed || true
           } 2>&1 | tee -a "$GITHUB_WORKSPACE/probe-log.txt"
+          exit "${PIPESTATUS[0]}"
 
       - name: Tao AVD va khoi dong emulator (chi khi co KVM)
         run: |
@@ -200,14 +219,23 @@ jobs:
             export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/emulator:$PATH"
             echo "KVM_PRESENT=$KVM_PRESENT"
             echo "KVM_WRITABLE=$KVM_WRITABLE"
+            echo "HOME=$HOME"
+            echo "ANDROID_AVD_HOME=$ANDROID_AVD_HOME"
+            echo "ANDROID_SDK_HOME=$ANDROID_SDK_HOME"
+            avdmanager list device || true
             if [ "$KVM_WRITABLE" = "yes" ]; then ACCEL="-accel on"; else ACCEL="-no-accel"; fi
             echo "ACCEL=$ACCEL"
             if ! echo no | avdmanager create avd -n probe33 -k "system-images;android-33;default;arm64-v8a" --device "pixel_5" -f; then echo "ARM_BLOCKED_AT=avd_create"; exit 1; fi
+            avdmanager list avd || true
+            ls -la "$HOME/.android/avd/" || true
+            if [ ! -f "$HOME/.android/avd/probe33.ini" ]; then echo "ARM_BLOCKED_AT=avd_create"; echo "AVD_CREATE_FAILED: no probe33.ini"; exit 1; fi
             BOOT_START=$(date +%s)
             nohup emulator -avd probe33 -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect $ACCEL > "$GITHUB_WORKSPACE/emulator.log" 2>&1 &
             echo "EMULATOR_PID=$!"
             BOOT_SECONDS=""
             for i in $(seq 1 40); do
+              ELAPSED=$(( $(date +%s) - BOOT_START ))
+              if [ "$ELAPSED" -ge 600 ]; then echo "BOOT_TIMEOUT (elapsed ${ELAPSED}s)"; break; fi
               timeout 10 adb wait-for-device || true
               BOOTED=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
               echo "poll $i: sys.boot_completed=$BOOTED elapsed=$(( $(date +%s) - BOOT_START ))s"
@@ -228,6 +256,7 @@ jobs:
             ls -lh "$GITHUB_WORKSPACE/screen.png" || true
             file "$GITHUB_WORKSPACE/screen.png" || true
           } 2>&1 | tee -a "$GITHUB_WORKSPACE/probe-log.txt"
+          exit "${PIPESTATUS[0]}"
 
       - name: Tai len artifact probe-arm
         if: always()
