@@ -96,6 +96,7 @@ jobs:
           adb version || true
 
       - name: Boot emulator with HTTP proxy and open ipify
+        timeout-minutes: 20
         run: |
           set -e
           if [ -z "$ANDROID_HOME" ] && [ -d /usr/local/lib/android/sdk ]; then export ANDROID_HOME=/usr/local/lib/android/sdk; fi
@@ -103,13 +104,24 @@ jobs:
           export ANDROID_USER_HOME="$GITHUB_WORKSPACE/.android"
           emulator -avd probe33 -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -no-snapshot -wipe-data -verbose -http-proxy 127.0.0.1:8080 > emulator.log 2>&1 &
           echo $! > emulator.pid
-          adb wait-for-device
+          sleep 30
+          echo "=== EMULATOR PROCESS ==="
+          ps aux | grep -i '[e]mulator' || true
+          echo "=== ADB DEVICES ==="
+          adb devices -l || true
+          echo "=== EMULATOR LOG (tail 120) ==="
+          tail -n 120 emulator.log || true
+          if ! kill -0 "$(cat emulator.pid)" 2>/dev/null; then echo "Emulator process exited"; cat emulator.log; exit 1; fi
+          echo "Waiting for device (max 600s)..."
+          timeout 600 adb wait-for-device || { echo "adb wait-for-device timed out"; tail -n 200 emulator.log; adb devices -l; exit 1; }
           echo "Waiting for boot_completed..."
           for i in $(seq 1 60); do
-            if [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ]; then echo "Boot completed after ${i} checks"; break; fi
+            if [ "$(timeout 15 adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ]; then echo "Boot completed after ${i} checks"; break; fi
             sleep 10
           done
-          adb shell getprop sys.boot_completed
+          BOOT=$(timeout 15 adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
+          echo "boot_completed=$BOOT"
+          if [ "$BOOT" != "1" ]; then echo "Emulator did not finish booting"; tail -n 200 emulator.log; exit 1; fi
           adb shell input keyevent 82
           sleep 5
           echo "=== DUMPSYS WINDOW ==="
@@ -142,3 +154,14 @@ jobs:
           path: |
             summary.txt
             ip-screen.png
+
+      - name: Upload diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: proxy-test-logs
+          path: |
+            emulator.log
+            gost.log
+            ssh-tunnel.log
+          if-no-files-found: warn
