@@ -1,0 +1,219 @@
+name: screen-bridge
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  bridge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
+      ANDROID_HOME: ${{ github.workspace }}/android-sdk
+      ANDROID_AVD_HOME: ${{ github.workspace }}/android-user-home/avd
+      ANDROID_USER_HOME: ${{ github.workspace }}/android-user-home
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Kiem tra KVM va sua udev (giong android-probe)
+        run: |
+          {
+            echo "=== SYSTEM ==="
+            uname -a
+            echo "NPROC=$(nproc)"
+            free -h
+            java -version 2>&1 || echo "JAVA_MISSING"
+            echo "=== KVM ==="
+            ls -l /dev/kvm || echo "/dev/kvm missing"
+            if [ -e /dev/kvm ]; then KVM_PRESENT=yes; else KVM_PRESENT=no; fi
+            if [ -w /dev/kvm ]; then KVM_WRITABLE=yes; else KVM_WRITABLE=no; fi
+            echo "KVM_PRESENT=$KVM_PRESENT"
+            echo "KVM_WRITABLE=$KVM_WRITABLE"
+            if [ "$KVM_PRESENT" = "yes" ] && [ "$KVM_WRITABLE" = "no" ]; then
+              echo "Applying KVM udev fix..."
+              echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+              sudo udevadm control --reload-rules || true
+              sudo udevadm trigger --name-match=kvm || true
+              sleep 2
+              ls -l /dev/kvm || true
+              if [ -w /dev/kvm ]; then KVM_WRITABLE=yes; else KVM_WRITABLE=no; fi
+              echo "KVM_PRESENT=$KVM_PRESENT"
+              echo "KVM_WRITABLE=$KVM_WRITABLE"
+            fi
+            echo "KVM_PRESENT=$KVM_PRESENT" >> "$GITHUB_ENV"
+            echo "KVM_WRITABLE=$KVM_WRITABLE" >> "$GITHUB_ENV"
+          } 2>&1 | tee -a "$GITHUB_WORKSPACE/bridge-log.txt"
+          exit "${PIPESTATUS[0]}"
+
+      - name: Cai dat Android SDK
+        run: |
+          {
+            echo "=== SDK INSTALL ==="
+            SDK_START=$(date +%s)
+            export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/emulator:$PATH"
+            mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
+            if ! curl -fsSL -o /tmp/cmdtools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip; then echo "SDK_DOWNLOAD_FAILED"; exit 1; fi
+            unzip -q -o /tmp/cmdtools.zip -d "$ANDROID_SDK_ROOT/cmdline-tools/tmp"
+            mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools/latest"
+            mv "$ANDROID_SDK_ROOT/cmdline-tools/tmp/cmdline-tools/"* "$ANDROID_SDK_ROOT/cmdline-tools/latest/"
+            yes | sdkmanager --licenses || true
+            if ! sdkmanager "platform-tools" "emulator" "platforms;android-33" "system-images;android-33;default;x86_64"; then
+              echo "SDK_INSTALL_STATUS=failed"
+              exit 1
+            fi
+            echo "SDK_INSTALL_STATUS=ok"
+            sdkmanager --list_installed || true
+          } 2>&1 | tee -a "$GITHUB_WORKSPACE/bridge-log.txt"
+          exit "${PIPESTATUS[0]}"
+
+      - name: Tao AVD va khoi dong emulator
+        run: |
+          {
+            echo "=== AVD + BOOT ==="
+            export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/emulator:$PATH"
+            if [ "$KVM_WRITABLE" = "yes" ]; then ACCEL="-accel on"; else ACCEL="-no-accel"; fi
+            echo "ACCEL=$ACCEL"
+            echo no | avdmanager create avd -n probe33 -k "system-images;android-33;default;x86_64" --device "pixel_5" -f || echo "AVDMANAGER_CREATE_FAILED"
+            avdmanager list avd || true
+            if [ ! -f "$ANDROID_AVD_HOME/probe33.ini" ]; then
+              echo "AVD_CREATE_FAILED: no probe33.ini under ANDROID_AVD_HOME after avdmanager create"
+              exit 1
+            fi
+            BOOT_START=$(date +%s)
+            nohup emulator -avd probe33 -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect $ACCEL > "$GITHUB_WORKSPACE/emulator.log" 2>&1 &
+            echo "EMULATOR_PID=$!"
+            BOOT_SECONDS=""
+            for i in $(seq 1 40); do
+              ELAPSED=$(( $(date +%s) - BOOT_START ))
+              if [ "$ELAPSED" -ge 600 ]; then echo "BOOT_TIMEOUT (elapsed ${ELAPSED}s)"; break; fi
+              timeout 10 adb wait-for-device || true
+              BOOTED=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
+              echo "poll $i: sys.boot_completed=$BOOTED elapsed=$(( $(date +%s) - BOOT_START ))s"
+              if [ "$BOOTED" = "1" ]; then BOOT_SECONDS=$(( $(date +%s) - BOOT_START )); break; fi
+              sleep 15
+            done
+            if [ -z "$BOOT_SECONDS" ]; then
+              echo "BOOT_TIMEOUT"
+              tail -n 100 "$GITHUB_WORKSPACE/emulator.log" || true
+              exit 1
+            fi
+            echo "BOOT_SECONDS=$BOOT_SECONDS"
+            echo "ANDROID_VERSION=$(adb shell getprop ro.build.version.release | tr -d '\r')"
+            echo "ANDROID_SDK=$(adb shell getprop ro.build.version.sdk | tr -d '\r')"
+            echo "ANDROID_ABI=$(adb shell getprop ro.product.cpu.abi | tr -d '\r')"
+            adb exec-out screencap -p > "$GITHUB_WORKSPACE/screen.png"
+            ls -lh "$GITHUB_WORKSPACE/screen.png" || true
+          } 2>&1 | tee -a "$GITHUB_WORKSPACE/bridge-log.txt"
+          exit "${PIPESTATUS[0]}"
+
+      - name: Cai dat va khoi dong ws-scrcpy
+        run: |
+          export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/emulator:$PATH"
+          node --version
+          npm --version
+          adb devices
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential python3 || true
+          git clone https://github.com/NetrisTV/ws-scrcpy.git ws-scrcpy
+          cd ws-scrcpy
+          npm install || npm install --ignore-scripts
+          echo "=== tim scrcpy-server di kem ==="
+          find . -iname '*scrcpy-server*' | head -20 || true
+          if [ -z "$(find . -iname '*scrcpy-server*' -print -quit)" ]; then
+            echo "Chua thay scrcpy-server di kem, thu tai ban prebuilt..."
+            for DL in "https://github.com/Genymobile/scrcpy/releases/download/v2.4/scrcpy-server-v2.4" "https://github.com/Genymobile/scrcpy/releases/download/v1.25/scrcpy-server-v1.25"; do
+              if curl -fsSL -o /tmp/scrcpy-server.jar "$DL"; then echo "Da tai $DL"; break; fi
+            done
+            ls -lh /tmp/scrcpy-server.jar 2>/dev/null || true
+          fi
+          JAR="$(find . -iname '*scrcpy-server*' -print -quit)"
+          if [ -n "$JAR" ] && [ -f "$JAR" ]; then
+            echo "Day scrcpy-server len emulator: $JAR"
+            adb push "$JAR" /data/local/tmp/scrcpy-server.jar || true
+          fi
+          if [ -s /tmp/scrcpy-server.jar ]; then
+            adb push /tmp/scrcpy-server.jar /data/local/tmp/scrcpy-server.jar || true
+          fi
+          nohup npm start > "$GITHUB_WORKSPACE/ws-scrcpy.log" 2>&1 &
+          echo "WS_SCRCPY_PID=$!"
+          cd "$GITHUB_WORKSPACE"
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:8000 >/dev/null 2>&1; then echo "WS_SCRCPY_UP sau khoang ${i}0 giay"; break; fi
+            if [ "$i" = "60" ]; then echo "WS_SCRCPY_TIMEOUT"; tail -n 100 ws-scrcpy.log || true; exit 1; fi
+            sleep 10
+          done
+          curl -s -o /dev/null -w "LOCAL_HTTP_CODE=%{http_code}\n" http://localhost:8000
+          curl -s http://localhost:8000 | head -c 300; echo
+          adb devices
+
+      - name: Mo Cloudflare tunnel
+        run: |
+          curl -fsSL -o /tmp/cloudflared.tgz https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.tgz
+          tar -xzf /tmp/cloudflared.tgz -C /tmp
+          sudo mv /tmp/cloudflared /usr/local/bin/cloudflared
+          cloudflared --version
+          nohup cloudflared tunnel --url http://localhost:8000 > "$GITHUB_WORKSPACE/cloudflared.log" 2>&1 &
+          echo "CLOUDFLARED_PID=$!"
+          BRIDGE_URL=""
+          for i in $(seq 1 24); do
+            BRIDGE_URL=$(grep -oE 'https://[A-Za-z0-9.-]+\.trycloudflare\.com' "$GITHUB_WORKSPACE/cloudflared.log" | head -n 1 || true)
+            if [ -n "$BRIDGE_URL" ]; then break; fi
+            sleep 5
+          done
+          if [ -z "$BRIDGE_URL" ]; then echo "TUNNEL_URL_NOT_FOUND"; tail -n 100 "$GITHUB_WORKSPACE/cloudflared.log" || true; exit 1; fi
+          echo "BRIDGE_URL=$BRIDGE_URL"
+          echo "BRIDGE_URL=$BRIDGE_URL" >> "$GITHUB_ENV"
+          echo "$BRIDGE_URL" > "$GITHUB_WORKSPACE/bridge_url.txt"
+          mkdir -p results/screen-bridge
+          echo "$BRIDGE_URL" > results/screen-bridge/url.txt
+          cat results/screen-bridge/url.txt
+          curl -s -o /dev/null -w "TUNNEL_HTTP_CODE=%{http_code}\n" "$BRIDGE_URL" || true
+          echo "BRIDGE_URL=$BRIDGE_URL" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Luu URL vao repo
+        run: |
+          git config user.name "fruitcusp"
+          git config user.email "fruitcusp@users.noreply.github.com"
+          git status --short
+          git add results/screen-bridge/url.txt
+          if git diff --cached --quiet; then echo "NO_CHANGES_TO_COMMIT"; exit 0; fi
+          git commit -m "Screen bridge URL"
+          for attempt in 1 2 3 4 5; do
+            if git push origin HEAD:main; then echo "PUSH_OK"; break; fi
+            echo "Push that bai, pull --rebase lan $attempt"
+            git pull --rebase origin main || git rebase --abort || true
+            sleep 5
+          done
+          git log --oneline -3
+          echo "BRIDGE_URL=$(cat results/screen-bridge/url.txt)"
+
+      - name: Tai len artifact bridge
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screen-bridge
+          path: |
+            bridge-log.txt
+            ws-scrcpy.log
+            cloudflared.log
+            emulator.log
+            screen.png
+            bridge_url.txt
+          if-no-files-found: warn
+
+      - name: Giu cau noi 60 phut
+        run: |
+          echo "BRIDGE_URL=$(cat results/screen-bridge/url.txt)"
+          echo "BRIDGE_URL=$(cat results/screen-bridge/url.txt)"
+          for i in $(seq 1 60); do
+            echo "BRIDGE_ALIVE phut $i/60 BRIDGE_URL=$(cat results/screen-bridge/url.txt) $(date -u +%H:%M:%S)"
+            curl -fsS -o /dev/null http://localhost:8000 || echo "LOCAL_8000_CHECK_FAILED phut $i"
+            sleep 60
+          done
