@@ -3,6 +3,9 @@ name: android-probe
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   x86:
     runs-on: ubuntu-latest
@@ -13,7 +16,7 @@ jobs:
       ANDROID_AVD_HOME: ${{ github.workspace }}/android-user-home/avd
       ANDROID_USER_HOME: ${{ github.workspace }}/android-user-home
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Thong tin he thong va kiem tra KVM
         id: kvm
@@ -125,7 +128,7 @@ jobs:
 
       - name: Tai len artifact probe-x86
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: probe-x86
           path: |
@@ -143,7 +146,7 @@ jobs:
       ANDROID_AVD_HOME: ${{ github.workspace }}/android-user-home/avd
       ANDROID_USER_HOME: ${{ github.workspace }}/android-user-home
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Thong tin he thong va kiem tra KVM
         id: kvm
@@ -266,7 +269,7 @@ jobs:
 
       - name: Tai len artifact probe-arm
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: probe-arm
           path: |
